@@ -1,31 +1,61 @@
 #!/usr/bin/env node
 
-var crypto = require('crypto');
-var restify = require('restify');
-var request = require('request');
-var program = require('commander');
-var opn = require('opn');
+var crypto = require("crypto");
+var restify = require("restify");
+var request = require("request");
+var program = require("commander");
+var opn = require("opn");
+const OktaJwtVerifier = require("@okta/jwt-verifier")
 
+require("dotenv").config();
 // Setup
 
 program
-  .option('-c, --client_id <okta client id>', 'OIDC Client ID', '')
-  .option('-o, --okta_org <okta org url>', 'ex: https://micah.oktapreview.com', '')
-  .option('-s, --scopes <space separated list of scopes>', 'Space separated list of scopes', 'openid profile email')
-  .option('-r, --redirect_uri <redirect uri>', 'redirect uri', 'http://localhost:8080/redirect')
+  .option("-c, --client_id <okta client id>", "OIDC Client ID", "")
+  .option(
+    "-o, --okta_org <okta org url>",
+    "ex: https://micah.oktapreview.com",
+    ""
+  )
+  .option(
+    "-s, --scopes <space separated list of scopes>",
+    "Space separated list of scopes",
+    "openid profile email"
+  )
+  .option(
+    "-r, --redirect_uri <redirect uri>",
+    "redirect uri",
+    "http://localhost:8080/redirect"
+  )
+  .option(
+    "-a --audience <audience>",
+    "audience",
+    "http//api/default"
+  )
   .parse(process.argv);
-  
+
 if (
-  !program.client_id || !program.okta_org || 
-  !program.scopes || !program.redirect_uri
+  !program.client_id ||
+  !program.okta_org ||
+  !program.scopes ||
+  !program.redirect_uri ||
+  !program.audience
 ) {
-  program.help();
-  process.exit(1);
-}  
-  
+  if (typeof process.env.CLIENT_ID !== "undefined" && process.env.CLIENT_ID) {
+    program.client_id = process.env.CLIENT_ID
+    program.okta_org = process.env.OKTA_ORG
+    program.scopes = process.env.SCOPES
+    program.redirect_uri = process.env.REDIRECT_URI
+    program.audience = process.env.AUDIENCE
+  } else {
+    program.help();
+    process.exit(1);
+  }
+}
+
 const server = restify.createServer({
-  name: 'myapp',
-  version: '1.0.0'
+  name: "myapp",
+  version: "1.0.0",
 });
 
 server.use(restify.plugins.acceptParser(server.acceptable));
@@ -33,96 +63,175 @@ server.use(restify.plugins.queryParser());
 server.use(restify.plugins.bodyParser());
 server.listen(8080);
 
-server.get('/redirect', oktaRedirectHandler);
+server.get("/redirect", oktaRedirectHandler);
 
 // execute auth code flow with pkce
 var codeVerifier = uuid();
-console.log('Created Code Verifier (v): ' + codeVerifier + '\n');
+console.log("Created Code Verifier (v): " + codeVerifier + "\n");
 var codeChallenge = base64url(
-  crypto.createHash('sha256').update(codeVerifier).digest('base64')
+  crypto.createHash("sha256").update(codeVerifier).digest("base64")
 );
-console.log('Created Code Challenge ($): ' + codeChallenge + '\n');
+console.log("Created Code Challenge ($): " + codeChallenge + "\n");
 var authorizeUrl = buildAuthorizeUrl(codeVerifier, codeChallenge);
-console.log('About to call Authorize URL: ' + authorizeUrl + '\n');
+console.log("About to call Authorize URL: " + authorizeUrl + "\n");
 
-console.log('press any key to continue...');
-keypress().then(() => {
+console.log("press any key to continue...");
+//keypress().then(() => {
   // Step 1: call authorize endpoint where user will authenticate to Okta
+  // if not logged in, it will prompt for credentials, otherwise will just get the credentials
   opn(authorizeUrl);
-});
+//});
 
 // Step 2: Okta redirects back to this app with an auth code
 async function oktaRedirectHandler(req, res, next) {
-  var body = '<html><body><h4>OAuth2 authorize complete. ' + 
-    'You can close this tab.</h4></body></html>';
+  var body =
+    "<html><body><h4>OAuth2 authorize complete. " +
+    "You can close this tab.</h4></body></html>";
   res.writeHead(200, {
-      'Content-Length': Buffer.byteLength(body),
-      'Content-Type': 'text/html'
+    "Content-Length": Buffer.byteLength(body),
+    "Content-Type": "text/html",
   });
   res.write(body);
   res.end();
 
-  console.log('\nGot code (α): ' + req.query.code + '\n');
+  console.log("\nGot code (α): " + req.query.code + "\n");
 
-  console.log('press any key to continue...');
-  await keypress();
+  console.log("press any key to continue...");
+  // await keypress();
 
   var form = {
-    grant_type: 'authorization_code',
+    grant_type: "authorization_code",
     redirect_uri: program.redirect_uri,
     client_id: program.client_id,
     code: req.query.code,
-    code_verifier: codeVerifier
+    code_verifier: codeVerifier,
   };
-  
-  console.log('\nCalling /token endpoint with:');
-  console.log('client_id: ' + form.client_id);
-  console.log('code_verifier (v): ' + form.code_verifier);
-  console.log('code (α): ' + form.code + '\n');
-  
+
+  console.log("\nCalling /token endpoint with:");
+  console.log("client_id: " + form.client_id);
+  console.log("code_verifier (v): " + form.code_verifier);
+  console.log("code (α): " + form.code + "\n");
+
   console.log(
-    'Here is the complete form post that will be sent to the /token endpoint:'
+    "Here is the complete form post that will be sent to the /token endpoint:"
   );
   console.log(form);
   console.log();
 
-  console.log('press any key to continue...');
+  console.log("press any key to continue...");
   await keypress();
-  
+
   // Step 3: call token endpoint where Okta will exchange code for tokens
   request.post(
-    { 
-      url: program.okta_org + '/oauth2/v1/token', 
-      form: form 
+    {
+      url: program.okta_org + "/oauth2/v1/token",
+      form: form,
     },
     function (err, httpResponse, body) {
       var tokenResponse = JSON.parse(body);
-      tokenResponseHandler(tokenResponse);
+      tokenResponseHandler(tokenResponse, next);
       return next();
     }
   );
 }
 
-async function tokenResponseHandler(tokenResponse) {
-  console.log('\nGot token response:');
+
+async function tokenResponseHandler(tokenResponse, next) {
+  console.log("\nGot token response:");
   console.log(tokenResponse);
   console.log();
 
-  console.log('press any key to continue...');
-  await keypress();  
+  // console.log("press any key to continue...");
+  // await keypress();
 
-  console.log('\nCalling /userinfo endpoint with access token\n');
-  
+  console.log("\nCalling /userinfo endpoint with access token\n");
+  console.log("\naccess_token: ", tokenResponse.access_token);
+
   // Step 4: use the access_token to hit the /userinfo endpoint
   request.get(
-    program.okta_org + '/oauth2/v1/userinfo', 
-    { auth: { bearer: tokenResponse.access_token } }, 
+    program.okta_org + "/oauth2/v1/userinfo",
+    { auth: { bearer: tokenResponse.access_token } },
     function (err, httpResponse, body) {
-      console.log(JSON.parse(body));
-      process.exit(0);
+      console.log(JSON.parse(body))
+      tokenVerification(tokenResponse, program.audience)
+      //tokenIntrospection(tokenResponse);
+      return next();
     }
   );
 }
+
+const tokenVerification = async(tokenResponse, expectedAudience) =>{
+  console.log('\nRunning the okta verifier')
+  const oktaJwtVerifier = new OktaJwtVerifier({
+    issuer: program.okta_org + "/oauth2/", //default"
+  })
+
+  try{
+    var result = await oktaJwtVerifier.verifyAccessToken(tokenResponse.access_token, expectedAudience)
+    console.log(result.claims)
+  }
+  catch(err){
+    console.log('Error', err)
+  }
+  
+}
+
+const tokenIntrospection = async (tokenResponse) => {
+  console.log("\nPerforming token introspection");
+  console.log();
+
+  var hrstart = process.hrtime();
+  var form = {
+    client_id: "0oa162t96hPYVJ07r4x7",
+    token: tokenResponse.access_token,
+    token_type_hint: "access_token",
+  };
+
+  request.post(
+    {
+      url: program.okta_org + "/oauth2/v1/introspect",
+      headers: {
+        accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      form: form,
+    },
+    (err, httpResponse, body) => {
+      
+//      var hrend = process.hrtime(hrstart);
+//      console.log("Execution time: %ds %dms", hrend[0], hrend[1] / 10000000)
+      
+      console.log(JSON.parse(body));
+      //return process.exit(0);
+    }
+  )
+
+  var hrstart = process.hrtime()
+  var form = {
+    client_id: "0oa162t96hPYVJ07r4x7",
+    token: tokenResponse.id_token,
+    token_type_hint: "id_token",
+  };
+
+  request.post(
+    {
+      url: program.okta_org + "/oauth2/v1/introspect",
+      headers: {
+        accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      form: form,
+    },
+    (err, httpResponse, body) => {
+      console.log(JSON.parse(body));
+
+      var hrend = process.hrtime(hrstart);
+      console.log("Execution time: %ds %dms", hrend[0], hrend[1] / 10000000);
+      
+      return process.exit(0);
+    }
+  );
+};
 
 function uuid() {
   function s4() {
@@ -130,31 +239,65 @@ function uuid() {
       .toString(16)
       .substring(1);
   }
-  return s4() + '_' + s4() + '_' + s4() + '_' + s4() + '_' + 
-    s4() + '_' + s4() + '_' + s4() + '_' + s4() + '_' + 
-    s4() + '_' + s4() + '_' + s4()
+  return (
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4() +
+    "_" +
+    s4()
+  );
 }
 
-function base64url(str){
-    return str.replace(/\+/g, '-').replace(/\//g, '_').replace(/\=+$/, '');
+function base64url(str) {
+  return str.replace(/\+/g, "-").replace(/\//g, "_").replace(/\=+$/, "");
 }
 
 function buildAuthorizeUrl(codeVerifier, codeChallenge) {
-	var authorizeUrl = program.okta_org + '/oauth2/v1/authorize?' +
-    'client_id=' + program.client_id + '&' +
-    'response_type=code&' +
-    'scope=' + program.scopes + '&' +
-    'redirect_uri=' + program.redirect_uri + '&' +
-    'state=' + uuid() + '&' +
-    'code_challenge_method=S256&' + 
-    'code_challenge=' + codeChallenge;
+  var authorizeUrl =
+    program.okta_org +
+    "/oauth2/v1/authorize?" +
+//    "/api/v1/authorizationServers/default?" +
+    "client_id=" +
+    program.client_id +
+    "&" +
+    "response_type=code&" +
+    "scope=" +
+    program.scopes +
+    "&" +
+    "redirect_uri=" +
+    program.redirect_uri +
+    "&" +
+    "state=" +
+    uuid() +
+    "&" +
+    "code_challenge_method=S256&" +
+    "code_challenge=" +
+    codeChallenge;
   return authorizeUrl;
 }
 
 async function keypress() {
-  process.stdin.setRawMode(true)
-  return new Promise(resolve => process.stdin.once('data', () => {
-    process.stdin.setRawMode(false)
-    resolve()
-  }))
+  process.stdin.setRawMode(true);
+  return new Promise((resolve) =>
+    process.stdin.once("data", () => {
+      process.stdin.setRawMode(false);
+      resolve();
+    })
+  );
 }
